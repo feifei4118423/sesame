@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Very Smart Assistant</string>
+    <string name="label_apartment">Apartment Door</string>
+    <string name="label_room">Room Door</string>
+    <string name="label_mom">Mom</string>
+    <string name="label_psw">PSW</string>
+</resources>
