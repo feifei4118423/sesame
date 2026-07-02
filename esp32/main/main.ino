@@ -1,12 +1,25 @@
-#include <WiFi.h>
+// NOTE: every actuator/PWM/timing number below is tuned to the physical
+// hardware. Do not change.
+
 #include <ArduinoJson.h>
+#include <ESPmDNS.h>
+#include <WiFi.h>
+#include <WiFiManager.h>
 
-const char *WIFI_SSID = "AnsonMilky";
-const char *WIFI_PASSWORD = "bobbysandy7";
-const unsigned long wifiConnectTimeout = 30000;
+const uint16_t serverPort = 4211;
+const char *mdnsHostname = "sesame-controller";
+const char *mdnsService = "sesame";
+const char *setupApName = "Sesame Controller Setup";
+const int configPortalTimeout = 180;
 
-WiFiServer server(4211);
-bool serverStarted = false;
+const char *sharedSecret = "sesame-8Kq2mVx7";
+
+WiFiServer server(serverPort);
+WiFiManager wm;
+
+const unsigned long reconnectInterval = 5000;
+unsigned long lastReconnectNudge = 0;
+bool wifiWasConnected = true;
 
 const int Motor1 = 6;
 const int Direction1 = 7;
@@ -27,19 +40,22 @@ const int apartmentRetractDirectionLevel = HIGH;
 const int roomExtendDirectionLevel = HIGH;
 const int roomRetractDirectionLevel = LOW;
 
-const unsigned long buttonDebounce = 80;
-const unsigned long buttonTriggerCooldown = 600;
 const int buttonActiveLevel = LOW;
+const unsigned long buttonResetHoldTime = 3000;
+const unsigned long blinkDuration = 500;
+
+int lastButtonReading = HIGH;
+unsigned long buttonPressStart = 0;
+bool resetTriggered = false;
+
+unsigned long ledOffAt = 0;
 
 class Actuator {
 private:
-  enum Phase {
-    Idle,
-    Extending,
-    Retracting
-  };
+  enum Phase { Idle, Extending, Holding, Retracting };
 
-  int pwmPin, dirPin, extLevel, retLevel, duty, extendDuration, retractDuration;
+  int pwmPin, dirPin, extLevel, retLevel, duty, extendDuration, retractDuration,
+      holdDuration;
   Phase phase = Idle;
   unsigned long phaseEnd = 0;
 
@@ -50,8 +66,12 @@ private:
   }
 
 public:
-  Actuator(int pwmPin, int dirPin, int extLevel, int retLevel)
-    : pwmPin(pwmPin), dirPin(dirPin), extLevel(extLevel), retLevel(retLevel), duty(defaultDuty), extendDuration(::extendDuration), retractDuration(::retractDuration) {}
+  Actuator(int pwmPin, int dirPin, int extLevel, int retLevel,
+           int holdDuration = 0, int extendDuration = ::extendDuration,
+           int retractDuration = ::retractDuration, int duty = defaultDuty)
+      : pwmPin(pwmPin), dirPin(dirPin), extLevel(extLevel), retLevel(retLevel),
+        duty(duty), extendDuration(extendDuration),
+        retractDuration(retractDuration), holdDuration(holdDuration) {}
 
   void begin() {
     pinMode(dirPin, OUTPUT);
@@ -60,7 +80,8 @@ public:
   }
 
   bool startExtend(int duty, int duration) {
-    if (phase != Idle) return false;
+    if (phase != Idle)
+      return false;
 
     this->duty = duty;
     setMotor(extLevel, duty);
@@ -70,7 +91,8 @@ public:
   }
 
   bool startRetract(int duty, int duration) {
-    if (phase != Idle) return false;
+    if (phase != Idle)
+      return false;
 
     this->duty = duty;
     setMotor(retLevel, duty);
@@ -81,11 +103,17 @@ public:
 
   void update() {
     unsigned long now = millis();
-    if ((long)(now - phaseEnd) < 0) {
+    if ((long)(now - phaseEnd) < 0)
+      return;
+
+    if (phase == Extending) {
+      ledcWrite(pwmPin, 0);
+      phase = Holding;
+      phaseEnd = now + (unsigned long)holdDuration;
       return;
     }
 
-    if (phase == Extending) {
+    if (phase == Holding) {
       setMotor(retLevel, duty);
       phase = Retracting;
       phaseEnd = now + (unsigned long)retractDuration;
@@ -98,103 +126,39 @@ public:
     }
   }
 
-  bool pressRemote() {
-    return startExtend(duty, extendDuration);
-  }
+  bool pressRemote() { return startExtend(duty, extendDuration); }
 
-  bool isBusy() const {
-    return phase != Idle;
-  }
+  bool isBusy() const { return phase != Idle; }
 };
 
-
-Actuator apartmentActuator(Motor1, Direction1, apartmentExtendDirectionLevel, apartmentRetractDirectionLevel);
-Actuator roomActuator(Motor2, Direction2, roomExtendDirectionLevel, roomRetractDirectionLevel);
-
-int lastButtonReading = HIGH;
-int stableButtonState = HIGH;
-unsigned long lastButtonEdge = 0;
-unsigned long lastButtonTrigger = 0;
-bool buttonReadyForNextPress = false;
+Actuator apartmentActuator(Motor1, Direction1, apartmentExtendDirectionLevel,
+                           apartmentRetractDirectionLevel, 5500, 3000, 5000,
+                           180);
+Actuator roomActuator(Motor2, Direction2, roomExtendDirectionLevel,
+                      roomRetractDirectionLevel, 4300, 7000, 5000, 255);
 
 void blink() {
   digitalWrite(StatusLedPin, HIGH);
-  delay(500);
-  digitalWrite(StatusLedPin, LOW);
+  ledOffAt = millis() + blinkDuration;
 }
 
-void sendResponse(WiFiClient &client, bool success, const String &message, const String &target = "") {
-  StaticJsonDocument<192> jsonDoc;
-  jsonDoc["success"] = success;
-  jsonDoc["message"] = message;
-  if (target.length() > 0) {
-    jsonDoc["target"] = target;
-  }
-  serializeJson(jsonDoc, client);
-  client.println();
-
-  if (success) {
-    blink();
+void updateStatusLed() {
+  if (ledOffAt != 0 && (long)(millis() - ledOffAt) >= 0) {
+    digitalWrite(StatusLedPin, LOW);
+    ledOffAt = 0;
   }
 }
 
-bool connectToWiFi(const String &ssid, const String &password) {
-  if (WiFi.status() == WL_CONNECTED) {
-    if (!serverStarted) {
-      server.begin();
-      serverStarted = true;
-      Serial.println("TCP server started on port 4211");
-    }
-    return true;
-  }
-
-  Serial.print("Connecting to: ");
-  Serial.println(ssid);
-
-  WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-  WiFi.begin(ssid.c_str(), password.c_str());
-
-  unsigned long now = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - now) < wifiConnectTimeout) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println();
-
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Failed to connect to Wi-Fi");
-    return false;
-  }
-
-  Serial.print("Connected to: ");
-  Serial.println(ssid);
-  Serial.print("IP: ");
-  Serial.println(WiFi.localIP());
-
-  if (!serverStarted) {
-    server.begin();
-    serverStarted = true;
-    Serial.println("TCP server started on port 4211");
-  }
-
-  return true;
+void homeActuators() {
+  apartmentActuator.startRetract(defaultDuty, retractDuration);
+  roomActuator.startRetract(defaultDuty, retractDuration);
 }
 
-bool openApartmentDoor() {
-  return apartmentActuator.pressRemote();
-}
-
-bool openRoomDoor() {
-  return roomActuator.pressRemote();
-}
-
-void retractBothActuatorsOnSetup() {
-  apartmentActuator.startRetract(180, retractDuration);
-  roomActuator.startRetract(180, retractDuration);
+void homeActuatorsBlocking() {
+  apartmentActuator.startRetract(defaultDuty, retractDuration);
+  roomActuator.startRetract(defaultDuty, retractDuration);
 
   unsigned long deadline = millis() + (unsigned long)retractDuration;
-
   while ((long)(millis() - deadline) < 0) {
     apartmentActuator.update();
     roomActuator.update();
@@ -202,14 +166,45 @@ void retractBothActuatorsOnSetup() {
   }
 }
 
+void sendResponse(WiFiClient &client, bool success, const String &message) {
+  JsonDocument doc;
+  doc["success"] = success;
+  doc["message"] = message;
+  serializeJson(doc, client);
+  client.println();
+
+  if (success) {
+    blink();
+  }
+}
+
 void handleCommand(WiFiClient &client, String line) {
+  line.trim();
+
+  // Every command arrives as "<secret> <command>". Reject anything whose
+  // prefix doesn't match the shared secret before touching an actuator.
+  int sep = line.indexOf(' ');
+  String token = (sep < 0) ? line : line.substring(0, sep);
+  if (token != sharedSecret) {
+    sendResponse(client, false, "UNAUTHORIZED");
+    return;
+  }
+  line = (sep < 0) ? "" : line.substring(sep + 1);
+  line.trim();
+
   if (line == "HEARTBEAT") {
     sendResponse(client, true, "HEARTBEAT_SUCCESS");
     return;
   }
 
+  if (line == "CONNECT") {
+    homeActuators();
+    sendResponse(client, true, "CONNECT_ACK");
+    return;
+  }
+
   if (line == "OPEN_APARTMENT") {
-    if (openApartmentDoor()) {
+    if (apartmentActuator.pressRemote()) {
       sendResponse(client, true, "OPEN_APARTMENT_SUCCESS");
     } else {
       sendResponse(client, false, "ACTUATOR_BUSY");
@@ -218,7 +213,7 @@ void handleCommand(WiFiClient &client, String line) {
   }
 
   if (line == "OPEN_ROOM") {
-    if (openRoomDoor()) {
+    if (roomActuator.pressRemote()) {
       sendResponse(client, true, "OPEN_ROOM_SUCCESS");
     } else {
       sendResponse(client, false, "ACTUATOR_BUSY");
@@ -234,25 +229,57 @@ void serviceButton() {
   int reading = digitalRead(ButtonPin);
 
   if (reading != lastButtonReading) {
-    lastButtonEdge = now;
     lastButtonReading = reading;
-  }
-
-  if ((now - lastButtonEdge) >= buttonDebounce && reading != stableButtonState) {
-    stableButtonState = reading;
-
-    bool pressed = (stableButtonState == buttonActiveLevel);
-    if (!pressed) {
-      buttonReadyForNextPress = true;
-      return;
-    }
-
-    if (buttonReadyForNextPress && (now - lastButtonTrigger) >= buttonTriggerCooldown) {
-      lastButtonTrigger = now;
-      buttonReadyForNextPress = false;
-      retractBothActuatorsOnSetup();
+    if (reading == buttonActiveLevel) {
+      buttonPressStart = now;
+    } else {
+      resetTriggered = false;
     }
   }
+
+  if (reading == buttonActiveLevel && !resetTriggered &&
+      (now - buttonPressStart) >= buttonResetHoldTime) {
+    resetTriggered = true;
+    Serial.println("Button held: erasing Wi-Fi credentials...");
+    digitalWrite(StatusLedPin, HIGH);
+    wm.resetSettings();
+    delay(800);
+    ESP.restart();
+  }
+}
+
+void startMdns() {
+  MDNS.end();
+  if (!MDNS.begin(mdnsHostname)) {
+    Serial.println("Error setting up mDNS responder!");
+    return;
+  }
+  MDNS.addService(mdnsService, "tcp", serverPort);
+  Serial.print("mDNS responder started: ");
+  Serial.print(mdnsHostname);
+  Serial.println(".local");
+}
+
+void serviceWiFi() {
+  bool nowConnected = (WiFi.status() == WL_CONNECTED);
+
+  if (!nowConnected) {
+    if (wifiWasConnected) {
+      Serial.println("Wi-Fi dropped. Reconnecting in background...");
+    }
+    unsigned long now = millis();
+    if (now - lastReconnectNudge > reconnectInterval) {
+      lastReconnectNudge = now;
+      WiFi.reconnect();
+    }
+  } else if (!wifiWasConnected) {
+    Serial.print("Wi-Fi reconnected. IP: ");
+    Serial.println(WiFi.localIP());
+    startMdns();
+    homeActuators();
+  }
+
+  wifiWasConnected = nowConnected;
 }
 
 void setup() {
@@ -260,32 +287,40 @@ void setup() {
   delay(1000);
 
   pinMode(ButtonPin, INPUT_PULLUP);
-
   pinMode(StatusLedPin, OUTPUT);
   digitalWrite(StatusLedPin, LOW);
-
-  int initialButtonReading = digitalRead(ButtonPin);
-  lastButtonReading = initialButtonReading;
-  stableButtonState = initialButtonReading;
-  lastButtonEdge = millis();
-  lastButtonTrigger = 0;
-
-  bool initiallyPressed = (initialButtonReading == buttonActiveLevel);
-  buttonReadyForNextPress = !initiallyPressed;
+  lastButtonReading = digitalRead(ButtonPin);
+  buttonPressStart = millis();
 
   apartmentActuator.begin();
   roomActuator.begin();
-  retractBothActuatorsOnSetup();
+  homeActuatorsBlocking();
 
-  connectToWiFi(WIFI_SSID, WIFI_PASSWORD);
+  Serial.println("Starting WiFiManager...");
+  wm.setConfigPortalTimeout(configPortalTimeout);
+  bool connected = wm.autoConnect(setupApName);
+  if (!connected) {
+    Serial.println("Failed to connect to Wi-Fi. Rebooting...");
+    delay(3000);
+    ESP.restart();
+  }
+
+  Serial.println("Connected to Wi-Fi successfully!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  startMdns();
+
+  server.begin();
+  Serial.println("TCP server started on port 4211");
 }
 
 void loop() {
   apartmentActuator.update();
   roomActuator.update();
-
+  updateStatusLed();
   serviceButton();
-  connectToWiFi(WIFI_SSID, WIFI_PASSWORD);
+  serviceWiFi();
 
   WiFiClient client = server.available();
   if (client) {

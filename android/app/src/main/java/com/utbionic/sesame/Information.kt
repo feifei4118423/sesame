@@ -1,4 +1,4 @@
-package com.utbionic.verysmartassistant
+package com.utbionic.sesame
 
 import android.app.Application
 import androidx.compose.runtime.getValue
@@ -23,22 +23,16 @@ class Information(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val DEFAULT_MOM_NUMBER = "1234567890"
         private const val DEFAULT_PSW_NUMBER = "1234567890"
-        private const val DEFAULT_CONTROLLER_ADDRESS = "very-smart-controller.local"
     }
 
     private val dataStore = application.dataStore
 
     private val momNumberKey = stringPreferencesKey("mom_number")
     private val pswNumberKey = stringPreferencesKey("psw_number")
-    private val controllerAddressKey = stringPreferencesKey("controller_address")
 
     var momNumber by mutableStateOf(DEFAULT_MOM_NUMBER)
         private set
     var pswNumber by mutableStateOf(DEFAULT_PSW_NUMBER)
-        private set
-    var controllerAddress by mutableStateOf(DEFAULT_CONTROLLER_ADDRESS)
-        private set
-    var isLoaded by mutableStateOf(false)
         private set
 
     init {
@@ -52,17 +46,14 @@ class Information(application: Application) : AndroidViewModel(application) {
             }.map { prefs -> prefs.toInfoState() }.collect { state ->
                 momNumber = state.momNumber
                 pswNumber = state.pswNumber
-                controllerAddress = state.controllerAddress
-                isLoaded = true
             }
         }
     }
 
-    fun update(newMomNumber: String, newPswNumber: String, newControllerAddress: String) {
+    fun update(newMomNumber: String, newPswNumber: String) {
         persist {
             it[momNumberKey] = newMomNumber
             it[pswNumberKey] = newPswNumber
-            it[controllerAddressKey] = newControllerAddress
         }
     }
 
@@ -78,14 +69,11 @@ class Information(application: Application) : AndroidViewModel(application) {
         return InfoState(
             momNumber = this[momNumberKey] ?: DEFAULT_MOM_NUMBER,
             pswNumber = this[pswNumberKey] ?: DEFAULT_PSW_NUMBER,
-            controllerAddress = this[controllerAddressKey] ?: DEFAULT_CONTROLLER_ADDRESS,
         )
     }
-
 
     private data class InfoState(
         val momNumber: String,
         val pswNumber: String,
-        val controllerAddress: String,
     )
 }

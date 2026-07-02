@@ -1,4 +1,4 @@
-package com.utbionic.verysmartassistant
+package com.utbionic.sesame
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.text.KeyboardOptions
@@ -17,17 +17,14 @@ import androidx.compose.ui.text.input.KeyboardType
 fun InfoDialog(
     currentMomNumber: String,
     currentPswNumber: String,
-    currentControllerAddress: String,
     onDismissRequest: () -> Unit,
     onConfirmation: (
         newMomNumber: String,
         newPswNumber: String,
-        newControllerAddress: String,
     ) -> Unit,
 ) {
     var newMomNumber by remember { mutableStateOf(currentMomNumber) }
     var newPswNumber by remember { mutableStateOf(currentPswNumber) }
-    var newControllerAddress by remember { mutableStateOf(currentControllerAddress) }
 
     AlertDialog(title = {
         Text("Update Information")
@@ -47,20 +44,13 @@ fun InfoDialog(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 singleLine = true,
             )
-            OutlinedTextField(
-                value = newControllerAddress,
-                onValueChange = { newControllerAddress = it.trim() },
-                label = { Text("Controller Address") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                singleLine = true,
-            )
         }
     }, onDismissRequest = {
         onDismissRequest()
     }, confirmButton = {
         TextButton(
             onClick = {
-                onConfirmation(newMomNumber, newPswNumber, newControllerAddress)
+                onConfirmation(newMomNumber, newPswNumber)
                 onDismissRequest()
             }) {
             Text("Confirm")

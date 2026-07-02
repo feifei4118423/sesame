@@ -1,11 +1,14 @@
-package com.utbionic.verysmartassistant
+package com.utbionic.sesame
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -28,8 +31,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
-import com.utbionic.verysmartassistant.ui.theme.VerySmartAssistantTheme
+import com.utbionic.sesame.ui.theme.SesameTheme
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 
@@ -40,15 +44,27 @@ class MainActivity : ComponentActivity() {
     private lateinit var deviceManager: DeviceManager
     private var isControllerConnected by mutableStateOf(false)
 
+    private var pendingCallNumber: String? = null
+    private val requestCallPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val number = pendingCallNumber
+            pendingCallNumber = null
+            if (granted && number != null) {
+                placeCall(number)
+            } else if (!granted) {
+                showMessage("Call permission denied")
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        deviceManager = DeviceManager(scope, information)
-        handleIntent(intent)
+        deviceManager = DeviceManager(applicationContext, scope)
+        connect()
 
         setContent {
-            VerySmartAssistantTheme {
+            SesameTheme {
                 Home(
                     modifier = Modifier
                         .fillMaxSize()
@@ -56,17 +72,11 @@ class MainActivity : ComponentActivity() {
                         .padding(horizontal = 16.dp),
                     information = information,
                     isControllerConnected = isControllerConnected,
-                    onSetup = {
-                        setup()
-                    },
-                    onCallMom = {
-                        call(information.momNumber)
-                    },
-                    onCallPSW = {
-                        call(information.pswNumber)
-                    },
-                    onOpenApartmentDoor = { openDoor("APARTMENT") },
-                    onOpenRoomDoor = { openDoor("ROOM") },
+                    onReconnect = { connect() },
+                    onCallMom = { call(information.momNumber) },
+                    onCallPSW = { call(information.pswNumber) },
+                    onOpenApartmentDoor = { openDoor("OPEN_APARTMENT", "Apartment Door") },
+                    onOpenRoomDoor = { openDoor("OPEN_ROOM", "Room Door") },
                     onInformationUpdated = { showMessage("Information updated") },
                 )
             }
@@ -74,109 +84,49 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        deviceManager.stopHeartbeat()
-        super.onDestroy()
+        deviceManager.stop()
         scope.cancel()
+        super.onDestroy()
     }
 
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        handleIntent(intent)
-    }
-
-    private fun setup() {
-        showMessage("Attempting to connect to controller...")
-        deviceManager.startHeartbeat(60_000) { heartbeatSuccess ->
-            val wasConnected = isControllerConnected
-            isControllerConnected = heartbeatSuccess
-
-            if (!heartbeatSuccess && wasConnected) {
-                showMessage("Connection lost.")
-            }
-            if (heartbeatSuccess && !wasConnected) {
-                showMessage("Connection restored.")
+    private fun connect() {
+        showMessage("Connecting to controller...")
+        deviceManager.start { connected ->
+            val changed = connected != isControllerConnected
+            isControllerConnected = connected
+            if (changed) {
+                showMessage(if (connected) "Controller connected" else "Controller disconnected")
             }
         }
     }
 
     private fun call(phoneNumber: String) {
-        val intent = Intent(Intent.ACTION_DIAL).apply {
-            data = ("tel:$phoneNumber").toUri()
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            placeCall(phoneNumber)
+        } else {
+            pendingCallNumber = phoneNumber
+            requestCallPermission.launch(Manifest.permission.CALL_PHONE)
+        }
+    }
+
+    private fun placeCall(phoneNumber: String) {
+        val intent = Intent(Intent.ACTION_CALL).apply {
+            data = "tel:$phoneNumber".toUri()
         }
         startActivity(intent)
     }
 
-    private fun openDoor(target: String) {
-        showMessage("Attempting to open $target")
-
-        val command = when (target) {
-            "APARTMENT" -> {
-                "OPEN_APARTMENT"
-            }
-
-            "ROOM" -> {
-                "OPEN_ROOM"
-            }
-
-            else -> {
-                showMessage("Invalid target: $target")
-                return
-            }
-        }
-
+    private fun openDoor(command: String, label: String) {
+        showMessage("Opening $label...")
         deviceManager.sendCommand(command) { success ->
-            val message = if (success) {
-                "Successfully opened $target"
-            } else {
-                "Error occurred while attempting to open $target"
-            }
-
-            showMessage(message)
+            showMessage(if (success) "$label opened" else "Could not open $label")
         }
     }
 
     private fun showMessage(message: String) {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
-    }
-
-    private fun handleIntent(incoming: Intent) {
-        if (incoming.action != Intent.ACTION_VIEW) return
-
-        val uri = incoming.data
-        val doorFromUri = uri?.getQueryParameter("door_type")
-        val doorExtra = incoming.getStringExtra("door_type")
-        val contactFromUri = uri?.getQueryParameter("contact")
-        val contactExtra = incoming.getStringExtra("contact")
-        val feature = incoming.getStringExtra("feature")
-
-        val doorType = when {
-            !doorFromUri.isNullOrBlank() -> doorFromUri
-            !doorExtra.isNullOrBlank() -> doorExtra
-            !feature.isNullOrBlank() && feature.contains(
-                "apartment", ignoreCase = true
-            ) -> "apartment"
-
-            !feature.isNullOrBlank() && feature.contains("room", ignoreCase = true) -> "room"
-            else -> null
-        }
-
-        val contactType = when {
-            !contactFromUri.isNullOrBlank() -> contactFromUri
-            !contactExtra.isNullOrBlank() -> contactExtra
-            !feature.isNullOrBlank() && feature.contains("mom", ignoreCase = true) -> "mom"
-            !feature.isNullOrBlank() && feature.contains("psw", ignoreCase = true) -> "psw"
-            else -> null
-        }
-
-        if (doorType != null) {
-            openDoor(doorType)
-        } else if (contactType != null) {
-            when (contactType.lowercase()) {
-                "mom" -> call(information.momNumber)
-                "psw" -> call(information.pswNumber)
-            }
-        }
     }
 }
 
@@ -185,7 +135,7 @@ fun Home(
     modifier: Modifier = Modifier,
     information: Information,
     isControllerConnected: Boolean,
-    onSetup: () -> Unit,
+    onReconnect: () -> Unit,
     onCallMom: () -> Unit,
     onCallPSW: () -> Unit,
     onOpenApartmentDoor: () -> Unit,
@@ -196,14 +146,13 @@ fun Home(
     val scrollState = rememberScrollState()
 
     Column(modifier = modifier.verticalScroll(scrollState)) {
-        Text("Very Smart Assistant", fontWeight = FontWeight.Bold, fontSize = 22.sp)
+        Text("Sesame", fontWeight = FontWeight.Bold, fontSize = 22.sp)
 
         Spacer(modifier = Modifier.height(12.dp))
 
         Text("Setup", fontWeight = FontWeight.Bold)
         Text("Mom Phone Number: ${information.momNumber}")
         Text("PSW Phone Number: ${information.pswNumber}")
-        Text("Controller Address: ${information.controllerAddress}")
         Text(
             text = if (isControllerConnected) {
                 "Controller Status: Connected"
@@ -218,15 +167,17 @@ fun Home(
             fontWeight = FontWeight.SemiBold,
         )
 
-        Button(onClick = onSetup, modifier = Modifier.fillMaxWidth()) { Text("Setup") }
+        Button(
+            onClick = onReconnect, modifier = Modifier.fillMaxWidth()
+        ) { Text("Reconnect Controller") }
         Text(
-            "Checks the controller connection", fontSize = 12.sp, color = Color.Gray
+            "Reconnects to the door controller", fontSize = 12.sp, color = Color.Gray
         )
 
         Button(
             onClick = { showInfoDialog = true }, modifier = Modifier.fillMaxWidth()
         ) { Text("Update Information") }
-        Text("Update phone numbers and controller address", fontSize = 12.sp, color = Color.Gray)
+        Text("Update phone numbers", fontSize = 12.sp, color = Color.Gray)
 
         Spacer(modifier = Modifier.height(12.dp))
 
@@ -257,13 +208,11 @@ fun Home(
         InfoDialog(
             currentMomNumber = information.momNumber,
             currentPswNumber = information.pswNumber,
-            currentControllerAddress = information.controllerAddress,
             onDismissRequest = { showInfoDialog = false },
-            onConfirmation = { newMom, newPsw, newAddr ->
-                information.update(newMom, newPsw, newAddr)
+            onConfirmation = { newMom, newPsw ->
+                information.update(newMom, newPsw)
                 onInformationUpdated()
             },
         )
     }
 }
-

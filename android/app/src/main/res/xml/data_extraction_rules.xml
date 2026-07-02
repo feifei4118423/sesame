@@ -5,7 +5,9 @@
 -->
 <data-extraction-rules>
     <cloud-backup>
-        <include domain="file" path="datastore/information.preferences_pb" />
+        <include
+            domain="file"
+            path="datastore/information.preferences_pb" />
     </cloud-backup>
     <!--
     <device-transfer>

@@ -5,12 +5,12 @@ plugins {
 }
 
 android {
-    namespace = "com.utbionic.verysmartassistant"
-    compileSdk = 36
+    namespace = "com.utbionic.sesame"
+    compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.utbionic.verysmartassistant"
-        minSdk = 33
+        applicationId = "com.utbionic.sesame"
+        minSdk = 31
         targetSdk = 36
         versionCode = 4
         versionName = "1.0"

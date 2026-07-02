@@ -1,4 +1,4 @@
-package com.utbionic.verysmartassistant.ui.theme
+package com.utbionic.sesame.ui.theme
 
 import androidx.compose.material3.Typography
 

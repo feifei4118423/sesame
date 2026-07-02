@@ -22,5 +22,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Very Smart Assistant"
+rootProject.name = "Sesame"
 include(":app")
