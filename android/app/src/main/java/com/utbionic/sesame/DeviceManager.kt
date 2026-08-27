@@ -18,6 +18,8 @@ import java.io.InputStreamReader
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 import kotlin.time.Duration.Companion.milliseconds
 
 class DeviceManager(
@@ -32,8 +34,15 @@ class DeviceManager(
         private const val RECONNECT_DELAY_MS = 10_000L
         private const val SERVICE_TYPE = "_sesame._tcp."
 
-        private const val SHARED_SECRET = "sesame-8Kq2mVx7"
+        private const val SHARED_SECRET =
+            "8b9f69c0c83cd5ef7e2844782bc32bd203c52dc7c2814ec8d51d3fd0e897494b"
     }
+
+    private fun sign(message: String): String =
+        Mac.getInstance("HmacSHA256")
+            .apply { init(SecretKeySpec(SHARED_SECRET.toByteArray(), algorithm)) }
+            .doFinal(message.toByteArray())
+            .joinToString("") { "%02x".format(it) }
 
     private var lifecycleJob: Job? = null
 
@@ -91,11 +100,13 @@ class DeviceManager(
                 socket.connect(InetSocketAddress(target, PORT), SOCKET_TIMEOUT_MS)
                 socket.soTimeout = SOCKET_TIMEOUT_MS
 
+                val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+                val nonce = reader.readLine().trim()
+
                 val out = socket.getOutputStream()
-                out.write(("$SHARED_SECRET $command\n").toByteArray())
+                out.write(("$command ${sign("$nonce $command")}\n").toByteArray())
                 out.flush()
 
-                val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
                 val response = reader.readLine()
                 JSONObject(response)["success"] == true
             }

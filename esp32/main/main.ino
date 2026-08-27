@@ -5,6 +5,8 @@
 #include <ESPmDNS.h>
 #include <WiFi.h>
 #include <WiFiManager.h>
+#include <esp_random.h>
+#include <mbedtls/md.h>
 
 const uint16_t serverPort = 4211;
 const char *mdnsHostname = "sesame-controller";
@@ -12,7 +14,8 @@ const char *mdnsService = "sesame";
 const char *setupApName = "Sesame Controller Setup";
 const int configPortalTimeout = 180;
 
-const char *sharedSecret = "sesame-8Kq2mVx7";
+const char *sharedSecret =
+    "8b9f69c0c83cd5ef7e2844782bc32bd203c52dc7c2814ec8d51d3fd0e897494b";
 
 WiFiServer server(serverPort);
 WiFiManager wm;
@@ -178,19 +181,31 @@ void sendResponse(WiFiClient &client, bool success, const String &message) {
   }
 }
 
-void handleCommand(WiFiClient &client, String line) {
+String hmacHex(const String &message) {
+  uint8_t mac[32];
+  mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
+                  (const uint8_t *)sharedSecret, strlen(sharedSecret),
+                  (const uint8_t *)message.c_str(), message.length(), mac);
+
+  String hex;
+  for (size_t i = 0; i < sizeof(mac); i++) {
+    char byteHex[3];
+    snprintf(byteHex, sizeof(byteHex), "%02x", mac[i]);
+    hex += byteHex;
+  }
+  return hex;
+}
+
+void handleCommand(WiFiClient &client, const String &nonce, String line) {
   line.trim();
 
-  // Every command arrives as "<secret> <command>". Reject anything whose
-  // prefix doesn't match the shared secret before touching an actuator.
-  int sep = line.indexOf(' ');
-  String token = (sep < 0) ? line : line.substring(0, sep);
-  if (token != sharedSecret) {
+  int sep = line.lastIndexOf(' ');
+  String command = (sep < 0) ? "" : line.substring(0, sep);
+  if (sep < 0 || line.substring(sep + 1) != hmacHex(nonce + " " + command)) {
     sendResponse(client, false, "UNAUTHORIZED");
     return;
   }
-  line = (sep < 0) ? "" : line.substring(sep + 1);
-  line.trim();
+  line = command;
 
   if (line == "HEARTBEAT") {
     sendResponse(client, true, "HEARTBEAT_SUCCESS");
@@ -325,8 +340,19 @@ void loop() {
   WiFiClient client = server.available();
   if (client) {
     client.setTimeout(300);
-    String line = client.readStringUntil('\n');
-    handleCommand(client, line);
+
+    char nonce[17];
+    snprintf(nonce, sizeof(nonce), "%08x%08x", esp_random(), esp_random());
+    client.println(nonce);
+
+    unsigned long deadline = millis() + 3000; // 3 second wait
+    while (!client.available() && (long)(millis() - deadline) < 0) {
+      apartmentActuator.update();
+      roomActuator.update();
+      yield();
+    }
+
+    handleCommand(client, nonce, client.readStringUntil('\n'));
     client.stop();
   }
 
