@@ -1,5 +1,4 @@
-// NOTE: every actuator/PWM/timing number below is tuned to the physical
-// hardware. Do not change.
+// Every actuator/PWM/timing number below is tuned to the physical hardware. Do not change.
 
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
@@ -15,7 +14,7 @@ const char *setupApName = "Sesame Controller Setup";
 const int configPortalTimeout = 180;
 
 const char *sharedSecret =
-    "8b9f69c0c83cd5ef7e2844782bc32bd203c52dc7c2814ec8d51d3fd0e897494b";
+  "8b9f69c0c83cd5ef7e2844782bc32bd203c52dc7c2814ec8d51d3fd0e897494b";
 
 WiFiServer server(serverPort);
 WiFiManager wm;
@@ -55,10 +54,13 @@ unsigned long ledOffAt = 0;
 
 class Actuator {
 private:
-  enum Phase { Idle, Extending, Holding, Retracting };
+  enum Phase { Idle,
+               Extending,
+               Holding,
+               Retracting };
 
   int pwmPin, dirPin, extLevel, retLevel, duty, extendDuration, retractDuration,
-      holdDuration;
+    holdDuration;
   Phase phase = Idle;
   unsigned long phaseEnd = 0;
 
@@ -72,9 +74,9 @@ public:
   Actuator(int pwmPin, int dirPin, int extLevel, int retLevel,
            int holdDuration = 0, int extendDuration = ::extendDuration,
            int retractDuration = ::retractDuration, int duty = defaultDuty)
-      : pwmPin(pwmPin), dirPin(dirPin), extLevel(extLevel), retLevel(retLevel),
-        duty(duty), extendDuration(extendDuration),
-        retractDuration(retractDuration), holdDuration(holdDuration) {}
+    : pwmPin(pwmPin), dirPin(dirPin), extLevel(extLevel), retLevel(retLevel),
+      duty(duty), extendDuration(extendDuration),
+      retractDuration(retractDuration), holdDuration(holdDuration) {}
 
   void begin() {
     pinMode(dirPin, OUTPUT);
@@ -129,9 +131,13 @@ public:
     }
   }
 
-  bool pressRemote() { return startExtend(duty, extendDuration); }
+  bool pressRemote() {
+    return startExtend(duty, extendDuration);
+  }
 
-  bool isBusy() const { return phase != Idle; }
+  bool isBusy() const {
+    return phase != Idle;
+  }
 };
 
 Actuator apartmentActuator(Motor1, Direction1, apartmentExtendDirectionLevel,
@@ -252,10 +258,8 @@ void serviceButton() {
     }
   }
 
-  if (reading == buttonActiveLevel && !resetTriggered &&
-      (now - buttonPressStart) >= buttonResetHoldTime) {
+  if (reading == buttonActiveLevel && !resetTriggered && (now - buttonPressStart) >= buttonResetHoldTime) {
     resetTriggered = true;
-    Serial.println("Button held: erasing Wi-Fi credentials...");
     digitalWrite(StatusLedPin, HIGH);
     wm.resetSettings();
     delay(800);
@@ -266,7 +270,7 @@ void serviceButton() {
 void startMdns() {
   MDNS.end();
   if (!MDNS.begin(mdnsHostname)) {
-    Serial.println("Error setting up mDNS responder!");
+    Serial.println("mDNS responder error");
     return;
   }
   MDNS.addService(mdnsService, "tcp", serverPort);
@@ -280,7 +284,7 @@ void serviceWiFi() {
 
   if (!nowConnected) {
     if (wifiWasConnected) {
-      Serial.println("Wi-Fi dropped. Reconnecting in background...");
+      Serial.println("Reconnecting to Wi-Fi...");
     }
     unsigned long now = millis();
     if (now - lastReconnectNudge > reconnectInterval) {
@@ -320,7 +324,7 @@ void setup() {
     ESP.restart();
   }
 
-  Serial.println("Connected to Wi-Fi successfully!");
+  Serial.println("Connected to Wi-Fi.");
   Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
 
@@ -345,7 +349,7 @@ void loop() {
     snprintf(nonce, sizeof(nonce), "%08x%08x", esp_random(), esp_random());
     client.println(nonce);
 
-    unsigned long deadline = millis() + 3000; // 3 second wait
+    unsigned long deadline = millis() + 1000;  // 1 second wait
     while (!client.available() && (long)(millis() - deadline) < 0) {
       apartmentActuator.update();
       roomActuator.update();
